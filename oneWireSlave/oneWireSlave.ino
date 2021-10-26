@@ -1,5 +1,5 @@
 /*
-  Arduino IDE 1.8.13 версия прошивки oneWireSlave 0.0.1 бета от 24.10.21
+  Arduino IDE 1.8.13 версия прошивки oneWireSlave 0.0.2 бета от 26.10.21
   Эмулятор slave устройства для шины one wire на attiny
 
   Автор Radon-lab.
@@ -14,6 +14,9 @@
 #define DDR_REG DDRB
 #define PIN_REG PINB
 #define PORT_REG PORTB
+
+#define ADER 0x01   //ошибка адреса
+#define ADOK 0x02   //адрес прочитан
 
 #define SEARCH_ROM 0xF0 //поиск адреса
 #define MATCH_ROM 0x55  //отправка адреса
@@ -51,13 +54,17 @@ int main(void) {
 //------------------------------Эмуляция шины 1wire---------------------------------------
 void readOneWire(void) //эмуляция шины 1wire
 {
-  static boolean addrSet; //флаг работы с адресом устройства
+  static uint8_t addrReg; //флаг работы с адресом устройства
 
   uint16_t TIMER = 0; //сбросили таймер
   GIFR |= (0x01 << INTF0); //сбросили флаг прерывания пина PB1
 
   while (!WIRE_CHK) if (++TIMER > US_TO_TICKS(2000)) return; //ждем окончания сигнала сброса
   if (TIMER < US_TO_TICKS(400)) return; //если сигнал сброса слишком короткий
+  if (addrReg & (0x01 << ADER)) { //если ошибка чтения адреса
+    addrReg = 0; //сбрасываем регистр адреса
+    return; //выходим
+  }
 
   _delay_us(2); //ждем
   WIRE_LO; //установили низкий уровень
@@ -66,35 +73,33 @@ void readOneWire(void) //эмуляция шины 1wire
   WIRE_HI; //установили высокий уровень
   _delay_us(2); //ждем
 
-  if (!addrSet) { //если сетевой протокол не пройден
+  if (!addrReg) { //если сетевой протокол не пройден
     switch (oneWireRead()) { //читаем байт сетевого протокола
       case READ_ROM: //комманда отправить адрес
         for (uint8_t i = 0; i < sizeof(wireAddrBuf); i++) if (oneWireWrite(wireAddrBuf[i])) return; //отправка на шину 1wire
         return; //выходим
       case MATCH_ROM: //комманда сравнить адрес
+        addrReg = (0x01 << ADER); //устанавливаем флаг ошибки чтения адреса
         for (uint8_t i = 0; i < sizeof(wireAddrBuf); i++) if (oneWireRead() != wireAddrBuf[i]) return; //отправка на шину 1wire
-        addrSet = 1; //обратились к нам
+        addrReg = (0x01 << ADOK); //устанавливаем флаг успешного чтения адреса
         return; //выходим
       case SEARCH_ROM: //комманда поиска адреса
         for (uint8_t i = 0; i < 64; i++) {
-          boolean addrBit = wireAddrBuf[i >> 3] & (0x01 << (i % 8));
-          oneWireWriteBit(addrBit);
-          oneWireWriteBit(!addrBit);
-
+          boolean addrBit = wireAddrBuf[i >> 3] & (0x01 << (i % 8)); //находим нужный бит адреса
+          oneWireWriteBit(addrBit); //отправляем прямой бит
+          oneWireWriteBit(!addrBit); //отправляем инверсный бит
           if (oneWireReadBit() != addrBit) return; //отправка на шину 1wire
         }
         return; //выходим
-      case SKIP_ROM: addrSet = 1; break; //пропуск адресации
+      case SKIP_ROM: break; //пропуск адресации
     }
   }
+  else addrReg = 0; //сбрасываем регистр адреса
 
-  if (addrSet) { //если сетевой протокол пройден
-    addrSet = 0; //сбрасываем флаг обращения
-    switch (oneWireRead()) { //читаем байт команды
-      case READ_DATA: //комманда отправить температуру
-        for (uint8_t i = 0; i < sizeof(wireDataBuf); i++) if (oneWireWrite(wireDataBuf[i])) return; //отправка на шину 1wire
-        break;
-    }
+  switch (oneWireRead()) { //читаем байт команды
+    case READ_DATA: //комманда отправить температуру
+      for (uint8_t i = 0; i < sizeof(wireDataBuf); i++) if (oneWireWrite(wireDataBuf[i])) return; //отправка на шину 1wire
+      break;
   }
 }
 //-----------------------------------Отправка на шину 1wire----------------------------------------
